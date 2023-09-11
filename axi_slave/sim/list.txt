@@ -1,0 +1,4 @@
+../code/axi_slave.v
+../code/tb_axi_slave.v
+
+
