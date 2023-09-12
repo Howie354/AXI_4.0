@@ -79,6 +79,14 @@ module axi_slave #(
     reg [7 : 0]       cur_rlen; //记录现在读到第几拍，写的时候不用记录，因为这是主机需要做的
                                 //读的中间变量
 
+    //outstanding fifo
+    reg [(AW << 1) - 1 : 0] fifo_mem [15 : 0];
+    reg [4 : 0] wr_ptr;
+    reg [4 : 0] rd_ptr;
+    
+    wire fifo_full  = {~rd_ptr[4],rd_ptr[3 : 0]} == wr_ptr;
+    wire fifo_empty = rd_ptr == wr_ptr;
+
 /*-------------------------------------write logic-----------------------------------*/
 
     always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
@@ -192,39 +200,103 @@ module axi_slave #(
     assign S_AXI_BID     = axi_bid;
 
 /*-------------------------------------read logic-----------------------------------*/
+    // always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
+    //     if(!S_AXI_ARSTN) begin
+    //         axi_arready <= 1'b0;
+    //     end
+    //     else if(S_AXI_ARVALID && S_AXI_ARREADY) begin
+    //         axi_arready <= (S_AXI_ARLEN == 0);
+    //     end
+    //     else if(!S_AXI_RVALID || S_AXI_RREADY) begin
+    //         axi_arready <= (cur_rlen <= 1); //小于等于1的意思是空闲时或者当读数据读到最后一拍时，就可以在下一拍继续接收读请求
+    //     end
+    // end
+    
+    //wr_ptr
     always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
-        if(!S_AXI_ARSTN) begin
-            axi_arready <= 1'b0;
+        if (!S_AXI_ARSTN) begin
+            wr_ptr <= 'b0;
         end
-        else if(S_AXI_ARVALID && S_AXI_ARREADY) begin
-            axi_arready <= (S_AXI_ARLEN == 0);
-        end
-        else if(!S_AXI_RVALID || S_AXI_RREADY) begin
-            axi_arready <= (cur_rlen <= 1); //小于等于1的意思是空闲时或者当读数据读到最后一拍时，就可以在下一拍继续接收读请求
+        else if (S_AXI_ARVALID && S_AXI_ARREADY) begin
+            wr_ptr <= wr_ptr + 1'b1;
+            fifo_mem[wr_ptr[3:0]] <= {S_AXI_ARADDR, S_AXI_ARLEN};
         end
     end
 
+    //rd_ptr
     always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
-        if(!S_AXI_ARSTN) begin
-            cur_rlen <= 'b0;
+        if (!S_AXI_ARSTN) begin
+            rd_ptr <= 'b0;
         end
-        else if(S_AXI_ARVALID && S_AXI_ARREADY) begin
-            cur_rlen <= S_AXI_ARLEN;
-        end
-        else if(S_AXI_RVALID && S_AXI_RREADY) begin
-            cur_rlen <= cur_rlen - 1'b1;
+        else if (cur_rlen == 1'b1) begin
+            rd_ptr <= rd_ptr + 1'b1;
         end
     end
-    
+
+    // araddr, arlen, cur_rlen
+    always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
+        if (!S_AXI_ARSTN) begin
+            cur_rlen <= 'b0;
+        end
+        else if ((cur_rlen == 'b0) && !fifo_empty) begin
+            r_raddr   <= fifo_mem[rd_ptr[3:0]][(AW << 1)-1 : AW];
+            r_rlen    <= fifo_mem[rd_ptr[3:0]][AW-1 : 0];
+            cur_rlen <= fifo_mem[rd_ptr[3:0]][AW-1 : 0];
+        end
+        else if (S_AXI_RVALID && S_AXI_RREADY) begin
+            cur_rlen <= (cur_rlen != 0) ? (cur_rlen - 1'b1) : 'b0;
+            r_raddr   <= next_rd_addr;
+        end
+    end
+
+    //axi_arready
     always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
         if(!S_AXI_ARSTN) begin
+            axi_arready <= 1'b1;
+        end
+        else if(!fifo_full) begin
+            axi_arready <= 1'b1;
+        end
+        else begin
+            axi_arready <= 1'b0;
+        end
+    end
+
+    //cur_rlen
+    // always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
+    //     if(!S_AXI_ARSTN) begin
+    //         cur_rlen <= 'b0;
+    //     end
+    //     else if(S_AXI_ARVALID && S_AXI_ARREADY) begin
+    //         cur_rlen <= S_AXI_ARLEN;
+    //     end
+    //     else if(S_AXI_RVALID && S_AXI_RREADY) begin
+    //         cur_rlen <= cur_rlen - 1'b1;
+    //     end
+    // end
+    
+    // always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
+    //     if(!S_AXI_ARSTN) begin
+    //         axi_rvalid <= 1'b0;
+    //     end
+    //     else if (S_AXI_ARVALID && S_AXI_ARREADY) begin
+    //         axi_rvalid <= 1'b1;
+    //     end
+    //     else if(S_AXI_RVALID && S_AXI_RREADY) begin
+    //         axi_rvalid <= (cur_rlen > 1'b0);
+    //     end
+    // end
+
+    // axi_rvalid
+    always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
+        if (!S_AXI_ARSTN) begin
             axi_rvalid <= 1'b0;
         end
-        else if (S_AXI_ARVALID && S_AXI_ARREADY) begin
+        else if (S_AXI_ARVALID && S_AXI_ARREADY && !fifo_empty) begin
             axi_rvalid <= 1'b1;
         end
-        else if(S_AXI_RVALID && S_AXI_RREADY) begin
-            axi_rvalid <= (cur_rlen > 1'b0);
+        else if (S_AXI_RVALID && S_AXI_RREADY) begin
+            axi_rvalid <= (cur_rlen > 0);
         end
     end
     
@@ -240,36 +312,33 @@ module axi_slave #(
         end
     end
 
-    always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
-        if(!S_AXI_ARSTN) begin
-            r_raddr <= 'b0;
-        end
-        else if(OPT_LOWPOWER && !S_AXI_ARVALID) begin
-            r_raddr <= 'b0;
-        end
-        else if(S_AXI_ARVALID && S_AXI_ARREADY) begin
-            r_raddr <= S_AXI_ARADDR;
-        end
-        else if(S_AXI_RVALID && S_AXI_RREADY) begin
-            r_raddr <= next_rd_addr;
-        end
-    end
+    // always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
+    //     if(!S_AXI_ARSTN) begin
+    //         r_raddr <= 'b0;
+    //     end
+    //     else if(OPT_LOWPOWER && !S_AXI_ARVALID) begin
+    //         r_raddr <= 'b0;
+    //     end
+    //     else if(S_AXI_ARVALID && S_AXI_ARREADY) begin
+    //         r_raddr <= S_AXI_ARADDR;
+    //     end
+    //     else if(S_AXI_RVALID && S_AXI_RREADY) begin
+    //         r_raddr <= next_rd_addr;
+    //     end
+    // end
 
     always @(posedge S_AXI_ACLK or negedge S_AXI_ARSTN) begin
         if(!S_AXI_ARSTN) begin
             axi_rid  <= 'b0;
-            r_rlen   <= 'b0;
             r_rburst <= 'b0;
             r_rsize  <= 'b0;
         end
         if(S_AXI_ARREADY) begin
             axi_rid  <= S_AXI_ARID;
-            r_rlen   <= S_AXI_ARLEN;
             r_rburst <= S_AXI_ARBURST;
             r_rsize  <= S_AXI_ARSIZE; 
             if(OPT_LOWPOWER && !S_AXI_ARVALID) begin
                 axi_rid  <= 'b0;
-                r_rlen   <= 'b0;
                 r_rburst <= 'b0;
                 r_rsize  <= 'b0;
             end
@@ -410,3 +479,4 @@ module axi_address #(
     end
     
 endmodule
+
